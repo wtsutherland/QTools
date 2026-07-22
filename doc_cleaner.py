@@ -3,6 +3,7 @@ import os
 import zipfile
 from pathlib import Path
 import docx
+from docx.shared import RGBColor
 
 
 def find_document_files(directory: str | os.PathLike[str]):
@@ -21,7 +22,16 @@ def find_document_files(directory: str | os.PathLike[str]):
     ]
 
 
-def _unlink_hyperlinks(paragraphs) -> None:
+def _iter_paragraphs(container):
+    """Yield every paragraph in a container, including those inside (nested) tables."""
+    yield from container.paragraphs
+    for table in container.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                yield from _iter_paragraphs(cell)
+
+
+def _unlink_hyperlinks(paragraphs):
     """Replace each hyperlink in the given paragraphs with plain runs, keeping its text."""
     for paragraph in paragraphs:
         for hyperlink in list(paragraph.hyperlinks):
@@ -34,15 +44,23 @@ def _unlink_hyperlinks(paragraphs) -> None:
             parent.remove(hyperlink_element)
 
 
-def _clear_header_footer(header_footer) -> None:
-    """Blank out all run text in a header or footer part."""
-    for paragraph in header_footer.paragraphs:
+def _set_text_black(paragraphs) -> None:
+    """Set font color to black for every run in the given paragraphs."""
+    black = RGBColor(0, 0, 0)
+    for paragraph in paragraphs:
+        for run in paragraph.runs:
+            run.font.color.rgb = black
+
+
+def _clear_header_footer(header_footer):
+    """Blank out all run text in a header or footer part, including text inside tables."""
+    for paragraph in _iter_paragraphs(header_footer):
         for run in paragraph.runs:
             run.text = ""
 
 
-def _clean_document(document: docx.Document) -> None:
-    """Remove headers/footers and unlink hyperlinks (keeping their text) in place."""
+def _clean_document(document: docx.Document):
+    """Remove headers/footers, unlink hyperlinks (keeping their text), and set body text to black in place."""
     for section in document.sections:
         for header_footer in (
             section.header, section.footer,
@@ -50,18 +68,15 @@ def _clean_document(document: docx.Document) -> None:
             section.even_page_header, section.even_page_footer,
         ):
             _clear_header_footer(header_footer)
-            _unlink_hyperlinks(header_footer.paragraphs)
+            _unlink_hyperlinks(_iter_paragraphs(header_footer))
 
-    _unlink_hyperlinks(document.paragraphs)
-
-    for table in document.tables:
-        for row in table.rows:
-            for cell in row.cells:
-                _unlink_hyperlinks(cell.paragraphs)
+    body_paragraphs = list(_iter_paragraphs(document))
+    _unlink_hyperlinks(body_paragraphs)
+    _set_text_black(body_paragraphs)
 
 
-def clean_docx(paths: list[Path]) -> None:
-    """Remove headers/footers and unlink hyperlinks (keeping their text) for each .docx path, saving each file back to itself."""
+def clean_docx(paths: list[Path]):
+    """Remove headers/footers, unlink hyperlinks (keeping their text), and set body text to black for each .docx path, saving each file back to itself."""
     for path in paths:
         print(path)
 
@@ -75,10 +90,11 @@ def clean_docx(paths: list[Path]) -> None:
             ) from error
         _clean_document(document)
         document.save(path)
+        print("Saved")
 
 
 
-def main() -> None:
+def main():
     if len(sys.argv) < 2:
         print("Error: Please provide a directory path.")
         sys.exit(1)
